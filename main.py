@@ -1,25 +1,24 @@
 import os
 import logging
 import asyncio
-from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
 
+# Set up clean logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Credentials verified from your dashboard settings
 BOT_TOKEN = "8961931336:AAEaQA-s27bqa3QwP3uJ2VgksOlSeP0eza0"
 RENDER_URL = "https://link-to-video-bot.onrender.com" 
-
-app = Flask(__name__)
-telegram_app = Application.builder().token(BOT_TOKEN).build()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome to LinkToVideo Bot!\n\n"
         "Just drop a link to a video from Instagram, TikTok, YouTube Shorts, or Twitter/X here, "
-        "and I will fetch the video file for you instantly."
+        "and I will fetch the video file for you instantly.\n\n"
+        "ℹ️ Note: Optimized for files up to 50 MB."
     )
 
 async def handle_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -28,19 +27,30 @@ async def handle_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return 
 
     status_message = await update.message.reply_text("📥 Processing your link... Please wait.")
+    
+    # Create unique output path based on update message ID to prevent filename overlaps
+    os.makedirs('downloads', exist_ok=True)
+    outtmpl = f'downloads/{update.message.message_id}_%(id)s.%(ext)s'
+    
     ydl_opts = {
         'format': 'best[ext=mp4]/best', 
-        'outtmpl': 'downloads/%(id)s.%(ext)s', 
+        'outtmpl': outtmpl, 
         'max_filesize': 50 * 1024 * 1024,
         'quiet': True,
     }
-    loop = asyncio.get_event_loop()
+    
+    # Run the blocking yt-dlp extraction in an isolated async background worker thread
+    loop = asyncio.get_running_loop()
     
     try:
         await status_message.edit_text("⚡ Downloading video from platform...")
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # This allows other messages to process while this single download runs!
             info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=True))
             filename = ydl.prepare_filename(info)
+            
+            # Catch extensions that shifted dynamically (e.g., mkv -> mp4)
             if not os.path.exists(filename):
                 base, _ = os.path.splitext(filename)
                 for file in os.listdir("downloads"):
@@ -56,40 +66,38 @@ async def handle_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
         await status_message.delete()
+        
     except Exception as e:
         await status_message.edit_text("❌ Failed to process. The file might be over 50MB or private.")
-        logger.error(f"Error: {e}")
+        logger.error(f"Error handling download: {e}")
+        
     finally:
         if 'filename' in locals() and os.path.exists(filename):
-            os.remove(filename)
+            try:
+                os.remove(filename)
+            except Exception:
+                pass
 
-@app.route(f'/{BOT_TOKEN}', methods=['POST'])
-def webhook():
-    if request.method == "POST":
-        update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-        asyncio.run(telegram_app.process_update(update))
-        return "OK", 200
-
-@app.route('/', methods=['GET'])
-def index():
-    return "Bot is running via Webhook!", 200
-
-def init_bot():
-    if not os.path.exists('downloads'):
-        os.makedirs('downloads')
-        
-    telegram_app.add_handler(CommandHandler("start", start))
-    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_download))
+def main():
+    # Build application layout
+    application = Application.builder().token(BOT_TOKEN).build()
     
-    async def set_webhook():
-        await telegram_app.initialize()
-        await telegram_app.bot.set_webhook(url=f"{RENDER_URL}/{BOT_TOKEN}")
-        logger.info(f"Webhook successfully set to {RENDER_URL}")
-        
-    asyncio.run(set_webhook())
-
-init_bot()
+    # Register command and message event handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_download))
+    
+    # Get port assigned dynamically by Render
+    port = int(os.environ.get("PORT", 8080))
+    
+    logger.info("Starting native asynchronous webhook gateway handler...")
+    
+    # Let the telegram framework native web handler manage everything asynchronously!
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=BOT_TOKEN,
+        webhook_url=f"{RENDER_URL}/{BOT_TOKEN}"
+    )
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    main()
