@@ -5,11 +5,9 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
 
-# Set up clean logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Credentials verified from your dashboard settings
 BOT_TOKEN = "8961931336:AAEaQA-s27bqa3QwP3uJ2VgksOlSeP0eza0"
 RENDER_URL = "https://link-to-video-bot.onrender.com" 
 
@@ -27,8 +25,6 @@ async def handle_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return 
 
     status_message = await update.message.reply_text("📥 Processing your link... Please wait.")
-    
-    # Create unique output path based on update message ID to prevent filename overlaps
     os.makedirs('downloads', exist_ok=True)
     outtmpl = f'downloads/{update.message.message_id}_%(id)s.%(ext)s'
     
@@ -39,18 +35,14 @@ async def handle_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'quiet': True,
     }
     
-    # Run the blocking yt-dlp extraction in an isolated async background worker thread
     loop = asyncio.get_running_loop()
     
     try:
         await status_message.edit_text("⚡ Downloading video from platform...")
-        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # This allows other messages to process while this single download runs!
             info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=True))
             filename = ydl.prepare_filename(info)
             
-            # Catch extensions that shifted dynamically (e.g., mkv -> mp4)
             if not os.path.exists(filename):
                 base, _ = os.path.splitext(filename)
                 for file in os.listdir("downloads"):
@@ -79,19 +71,13 @@ async def handle_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
 
 def main():
-    # Build application layout
     application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Register command and message event handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_download))
     
-    # Get port assigned dynamically by Render
     port = int(os.environ.get("PORT", 8080))
-    
     logger.info("Starting native asynchronous webhook gateway handler...")
     
-    # Let the telegram framework native web handler manage everything asynchronously!
     application.run_webhook(
         listen="0.0.0.0",
         port=port,
